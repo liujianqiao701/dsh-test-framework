@@ -522,20 +522,34 @@ test('需求文档总根目录：不写死绝对路径，配置 > 环境变量 >
     const bare = defaultReqDocRoot()
     assert.equal(bare, path.join(os.homedir(), '需求业务文档'), '兜底该是 <用户主目录>\\需求业务文档')
     // 硬红线：**源码里不许出现写死的个人绝对路径**。
-    // 只断言"兜底不等于某个字面量"是不够的（homedir 恰好也是 C:\Users\<名字>）——
+    // 只断言"兜底不等于某个字面量"是不够的（本机 homedir 恰好也在用户目录下）——
     // 所以直接扫源码与模板，从根上挡住"作者盘符被发到别人机器上"。
-    const HARDCODED = /[A-Za-z]:\\Users\\[^\\"'\s]+\\需求业务文档/
+    //
+    // ⚠️ 这里踩过一次：最初的正则只认**单反斜杠**（`D:\Users\...`），
+    // 而源码里是**双反斜杠转义**（`'D:\\Users\\...'`）—— 结果守卫一路"通过"，
+    // 写死的路径却随 0.2.0~0.2.3 四版发了出去。现在统一**先把连续反斜杠压成一个**再匹配。
+    const normalize = (s) => s.replace(/\\\\+/g, '\\')
+    // 只抓**具体的**用户名路径（`X:\Users\<真名字>\`）：
+    // 占位符（`<名字>` / `you`）与"正则写法"（`[A-Za-z]:\Users\`）都不是泄漏，
+    // 否则这条守卫会被自己文档里的说明文字反复绊倒。
+    const HARDCODED = /[A-Za-z]:\\Users\\[A-Za-z0-9_.-]+\\/
     const offenders = []
     const scan = (dir, rel = '') => {
       for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+        if (e.name === '.git' || e.name === 'node_modules') continue
+        // 跳过本文件：下面的 HARDCODED 正则**字面量本身**就长得像它要抓的东西，
+        // 扫自己必然自指命中。本文件里的真实泄漏由"本机词表"那条测试兜底（它不跳过本文件）。
+        if (e.name === 'framework.test.mjs') continue
         const p = path.join(dir, e.name)
         const r = rel ? `${rel}/${e.name}` : e.name
         if (e.isDirectory()) scan(p, r)
-        else if (/\.(js|mjs|md|json|yml)$/.test(e.name) && HARDCODED.test(fs.readFileSync(p, 'utf8'))) offenders.push(r)
+        else if (/\.(js|mjs|md|json|yml)$/.test(e.name) && HARDCODED.test(normalize(fs.readFileSync(p, 'utf8'))))
+          offenders.push(r)
       }
     }
-    scan(path.join(TEMPLATE_ROOT, '..', 'lib'), 'lib')
-    scan(path.join(TEMPLATE_ROOT, '..', 'templates'), 'templates')
+    // 扫**整个包**（README / package.json / test 都算）——
+    // 0.2.1 那次就是只扫了 lib 与 templates，结果漏在别处。
+    scan(path.join(TEMPLATE_ROOT, '..'))
     assert.deepEqual(offenders, [], `这些文件里还写死着个人绝对路径：\n${offenders.join('\n')}`)
 
     // ② 环境变量
@@ -821,9 +835,11 @@ test('外传前复扫：整个包不许出现本机词表里的词（词表不�
       const r = rel ? `${rel}/${e.name}` : e.name
       if (e.isDirectory()) walk(p, r)
       else if (TEXT.test(e.name)) {
-        const text = fs.readFileSync(p, 'utf8')
+        // 反斜杠压缩：源码里是 `D:\\Users\\...`（转义双写），词表里写的是 `D:\Users\...`，
+        // 不归一化就永远匹配不上 —— 0.2.0~0.2.3 就是这么漏出去的。
+        const text = fs.readFileSync(p, 'utf8').replace(/\\\\+/g, '\\')
         for (const w of words) {
-          if (text.includes(w)) offenders.push(`${r}  ← 命中「${w}」`)
+          if (text.includes(w.replace(/\\\\+/g, '\\'))) offenders.push(`${r}  ← 命中「${w}」`)
         }
       }
     }
