@@ -1,0 +1,7 @@
+# dsh-test-framework bundle patch: 挂载「AI 自动化测试框架」插件。
+#
+# 只在宿主侧（host）运行：注册工具、内嵌 skill、系统提示词/动态上下文闸门与两条斜杠命令。
+# 不注册任何客户端 UI 资源，因此**刻意不声明** dsh.client —— 不给 Web 前端加体积。
+- insert:
+    - id: test-framework
+      name: 'dsh-test-framework'

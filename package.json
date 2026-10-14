@@ -1,0 +1,72 @@
+{
+  "name": "dsh-test-framework",
+  "version": "0.2.2",
+  "type": "module",
+  "description": "面向测试工程师的 AI 自动化测试框架插件：一键把「测试工作框架」骨架落到任意新文件夹；会话里自动带上框架约束并形成闸门；引导式把需求文档拆成模块、确认版本与跨文档关联、登记测试环境与账密，落到产品级规范。",
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "dsh-plugin",
+    "cordis",
+    "test",
+    "qa",
+    "requirement",
+    "scaffold",
+    "qa-automation",
+    "test-report"
+  ],
+  "author": "liujianqiao",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/liujianqiao701/dsh-test-framework.git"
+  },
+  "homepage": "https://github.com/liujianqiao701/dsh-test-framework#readme",
+  "bugs": {
+    "url": "https://github.com/liujianqiao701/dsh-test-framework/issues"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
+  "main": "lib/index.js",
+  "bin": {
+    "dsh-test-framework": "lib/cli.js"
+  },
+  "exports": {
+    ".": "./lib/index.js",
+    "./framework": "./lib/framework.js",
+    "./docx": "./lib/docx.js",
+    "./templates": "./lib/templates.js",
+    "./skills": "./lib/skills.js",
+    "./install": "./lib/install.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "templates",
+    "test",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "test": "node test/framework.test.mjs && node test/install.test.mjs",
+    "test:framework": "node test/framework.test.mjs",
+    "test:install": "node test/install.test.mjs",
+    "status": "node lib/cli.js status",
+    "doctor": "node lib/cli.js doctor",
+    "help": "node lib/cli.js help"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "engines": {
+      "dsh": "*"
+    }
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}
