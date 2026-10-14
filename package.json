@@ -1,6 +1,6 @@
 {
   "name": "dsh-test-framework",
-  "version": "0.2.7",
+  "version": "0.2.8",
   "type": "module",
   "description": "面向测试工程师的 AI 自动化测试框架插件：一键把「测试工作框架」骨架落到任意新文件夹；会话里自动带上框架约束并形成闸门；引导式把需求文档拆成模块、确认版本与跨文档关联、登记测试环境与账密，落到产品级规范。",
   "keywords": [
@@ -40,6 +40,7 @@
     "./templates": "./lib/templates.js",
     "./skills": "./lib/skills.js",
     "./prereq": "./lib/prereq.js",
+    "./isolation": "./lib/isolation.js",
     "./install": "./lib/install.js",
     "./package.json": "./package.json"
   },

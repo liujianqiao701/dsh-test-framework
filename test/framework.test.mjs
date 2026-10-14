@@ -30,6 +30,7 @@ import {
 } from '../lib/framework.js'
 import { renderTemplate, KNOWN_KEYS, TEMPLATE_ROOT, readTemplate, listTemplateFiles } from '../lib/templates.js'
 import { checkPrerequisites, renderPrereqBlock, detectProfileMcp } from '../lib/prereq.js'
+import { checkIsolation, renderIsolationBlock, renderIsolationStatus, scanExternalAuthorities } from '../lib/isolation.js'
 import { probeDocx, isOle, isZip, decodeXml, parseDocumentXml } from '../lib/docx.js'
 import { SKILLS } from '../lib/skills.js'
 import { TOOLS } from '../lib/tools.js'
@@ -570,6 +571,144 @@ test('前置条件：profile 层不共享 —— 别的 profile 配了、当前 
   assert.equal(pw.found, true, '整体上"检测到了"（desktop 里有）')
   assert.equal(pw.inActiveProfile, false, '但当前 profile 里没有 —— 这一项必须能分辨出来')
   assert.deepEqual(pw.where, ['desktop'])
+})
+
+// ---------------------------------------------------------------------------
+// 防干扰（隔离）—— 用户口径："加上不被干扰机制，不要被其他项目的框架影响"
+//
+// 起因是**真事故**：本机**另一套工具链的工作区**（自带另一份完整 AGENTS.md）
+// 的"落盘必须在工作区内"这条规矩渗进了本框架，模块里被建出一批**永远装不进东西**的
+// `temps\_P1_temps\` 空壳（工具会拒收工作区外路径），模块 SKILL.md 里还留下"照着做必然失败"的经验。
+//
+// ⚠️ 这些测试**只用临时夹具**，绝不读跑测机器上真实的框架或别的项目目录 ——
+// 否则"这台机器上正好有别家的 AGENTS.md"就会让测试红，那是环境差异，不是代码错。
+// ---------------------------------------------------------------------------
+
+test('防干扰：干净的框架一个字都不报（不占 token）', () => {
+  const root = tmpdir()
+  scaffold({ root, product: PRODUCT, pluginVersion: '0.1.0' }) // 默认会建 .git 根标记
+  const iso = checkIsolation({ root, cwd: root })
+  assert.equal(iso.contract.loaded, true, '项目根 = 框架根 ⇒ 契约会被自动加载')
+  assert.deepEqual(iso.stray.dirs, [], '刚建出来的骨架不该有外来目录')
+  assert.deepEqual(iso.items, [], '没发现就不该有 findings')
+  assert.equal(renderIsolationBlock(iso), '', '没发现 ⇒ 空字符串（不占 token）')
+})
+
+test('防干扰：嵌套仓库截断契约要报，且不能**误诊**成"框架根没 .git"', () => {
+  const root = tmpdir()
+  scaffold({ root, product: PRODUCT, pluginVersion: '0.1.0' }) // 框架根**有** .git
+  const inner = path.join(root, '_plugin', 'inner')
+  fs.mkdirSync(path.join(inner, '.git'), { recursive: true }) // 框架树内部的嵌套仓库
+
+  const iso = checkIsolation({ root, cwd: inner })
+  assert.equal(iso.markers.git, true, '框架根的 .git 好好的')
+  assert.equal(iso.contract.truncatedBy, path.resolve(inner), '要认出是嵌套仓库截断的')
+  assert.equal(iso.contract.loaded, false)
+  const block = renderIsolationBlock(iso)
+  assert.ok(block.includes('嵌套仓库'), '必须点明是嵌套仓库')
+  assert.ok(!block.includes('框架根没有'), '框架根明明有 .git —— 不许误诊')
+})
+
+test('防干扰：项目根跑到框架**外面**时，要点名生效的是谁的契约', () => {
+  const root = tmpdir()
+  scaffold({ root, product: PRODUCT, pluginVersion: '0.1.0' })
+  const outside = tmpdir()
+  fs.writeFileSync(path.join(outside, 'AGENTS.md'), '# 别家的契约\n')
+
+  // 显式给 `projectRoot`：模拟「DSH 把项目根解析到了框架外」这个**事实**本身。
+  // 不靠 `findGitRoot` 自己走上去找 —— 那会依赖跑测机器上有没有 `C:\.git` 之类的环境差异。
+  const iso = checkIsolation({ root, projectRoot: outside, cwd: outside })
+  assert.equal(iso.contract.foreignRoot, path.resolve(outside))
+  assert.equal(iso.contract.loaded, false)
+  const block = renderIsolationBlock(iso)
+  assert.ok(block.includes('外面'), '要说清项目根在框架外')
+  assert.ok(block.includes(path.join(outside, 'AGENTS.md')), '要点名实际会加载的是哪份 AGENTS.md')
+  assert.ok(block.includes(root), '也要给出本框架框架根，方便对照')
+})
+
+test('防干扰：模块里的外来目录（temps）算污染，要报并给出正确做法', () => {
+  const root = tmpdir()
+  scaffold({ root, product: PRODUCT, pluginVersion: '0.1.0', module: '缺药登记', menu: '药品联动保障', slug: 'queyao-dengji' })
+  const moduleDir = path.join(root, PRODUCT, '缺药登记')
+  fs.mkdirSync(path.join(moduleDir, 'temps', '_P1_temps'), { recursive: true })
+  fs.writeFileSync(path.join(moduleDir, 'notes.md'), 'x') // 散落文件：只是没归位
+
+  const iso = checkIsolation({ root, cwd: root })
+  assert.ok(iso.stray.dirs.some((h) => h.rel.endsWith(path.join('temps'))), 'temps 要被认出来')
+  assert.ok(iso.stray.files.some((h) => h.rel.endsWith('notes.md')))
+  const block = renderIsolationBlock(iso)
+  assert.ok(block.includes('temps'), '要点名是哪个目录')
+  assert.ok(block.includes('data'), '要说清正确做法：落它自己的工作区、证据拷回 data\\')
+  // 散落**文件**是有意的生成落点也可能是没归位 —— 闸门不拿它刷噪音
+  assert.ok(!block.includes('notes.md'), '散落文件不进闸门（本框架自己就有一个有意的产物）')
+})
+
+test('防干扰：`skills\\` 是辅助目录、不是产品 —— 别把 vision-read\\engine 误报成外来目录', () => {
+  const root = tmpdir()
+  scaffold({ root, product: PRODUCT, pluginVersion: '0.1.0' })
+  fs.mkdirSync(path.join(root, 'skills', 'vision-read', 'engine'), { recursive: true })
+
+  const iso = checkIsolation({ root, cwd: root })
+  // 实测踩到过：只按"下划线开头 = 辅助目录"判断，会把 `skills` 当产品、
+  // `vision-read` 当模块，于是正当的 `engine\` 被报成"别的工具的工作目录"。
+  assert.deepEqual(iso.stray.dirs, [], '框架辅助目录下的嵌套内容不该被算成污染')
+  assert.equal(renderIsolationBlock(iso), '')
+})
+
+test('防干扰：标记不全要报（.git 是契约加载的唯一凭据）', () => {
+  const root = tmpdir()
+  scaffold({ root, product: PRODUCT, pluginVersion: '0.1.0', git: 'skip' })
+  const iso = checkIsolation({ root, cwd: root })
+  assert.ok(iso.items.some((i) => i.key === 'no-git'))
+  assert.ok(renderIsolationBlock(iso).includes('.git'))
+  assert.ok(iso.items.some((i) => i.key === 'no-git' && i.fix.includes('test_framework_init')))
+})
+
+test('防干扰：外部权威**只报告、不进闸门**（天天刷"检测到 N 个外部权威"是噪音）', () => {
+  const parent = tmpdir()
+  const root = path.join(parent, 'fw')
+  fs.mkdirSync(root)
+  scaffold({ root, product: PRODUCT, pluginVersion: '0.1.0' })
+  const other = path.join(parent, 'other')
+  fs.mkdirSync(other, { recursive: true })
+  fs.writeFileSync(path.join(other, 'AGENTS.md'), '# 另一份完整契约\n')
+  fs.mkdirSync(path.join(other, '.trae'), { recursive: true })
+
+  const externals = scanExternalAuthorities(root)
+  assert.ok(externals.some((e) => e.path === path.join(other, 'AGENTS.md')), '兄弟目录的契约要被扫到')
+  assert.ok(externals.some((e) => e.path === path.join(other, '.trae')), '.trae 规范库也要被扫到')
+
+  const iso = checkIsolation({ root, cwd: root })
+  assert.equal(renderIsolationBlock(iso), '', '从框架根本身开会话 ⇒ 外部权威不影响本会话 ⇒ 闸门闭嘴')
+  const statusText = renderIsolationStatus(iso)
+  assert.ok(statusText.includes('外部'), '但 status 里要如实列出来')
+  assert.ok(statusText.includes(other), '并且列出具体路径')
+})
+
+test('防干扰：有发现时闸门**不许**因为"登记没问题"就整段跳过', () => {
+  const root = tmpdir()
+  scaffold({ root, product: PRODUCT, pluginVersion: '0.1.0' })
+  const status = frameworkStatus({ root, product: PRODUCT, skipPrereq: true })
+  // 造一个"登记全对 + 契约没加载"的状态：这正是最容易被漏掉的那种
+  const fake = {
+    ...status,
+    agentsMdAutoLoaded: true,
+    products: [{ ...status.products[0], ready: true, missing: [] }],
+    isolation: { ...status.isolation, items: [{ key: 'stray-dirs', level: 'warn', title: '测试用发现', detail: '', fix: '' }] },
+  }
+  const gate = renderGate(fake)
+  assert.ok(gate.includes('防干扰'), '有干扰就必须出现在闸门里')
+  assert.ok(!gate.includes('{{'), '注入的正文里不许出现 {{')
+
+  // 反过来：没干扰、登记全对、前置条件没问题 ⇒ 空字符串
+  const clean = {
+    ...status,
+    agentsMdAutoLoaded: true,
+    products: [{ ...status.products[0], ready: true, missing: [] }],
+    prereqs: null,
+    isolation: { ...status.isolation, items: [] },
+  }
+  assert.equal(renderGate(clean), '', '全干净就该是空字符串')
 })
 
 test('登记函数两种调用方式都行（位置参数 / 对象参数）', () => {
