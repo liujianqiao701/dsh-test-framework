@@ -29,6 +29,7 @@ import {
   setReqDocRoot,
 } from '../lib/framework.js'
 import { renderTemplate, KNOWN_KEYS, TEMPLATE_ROOT, readTemplate, listTemplateFiles } from '../lib/templates.js'
+import { checkPrerequisites, renderPrereqBlock, detectProfileMcp } from '../lib/prereq.js'
 import { probeDocx, isOle, isZip, decodeXml, parseDocumentXml } from '../lib/docx.js'
 import { SKILLS } from '../lib/skills.js'
 import { TOOLS } from '../lib/tools.js'
@@ -463,6 +464,98 @@ test('renderGate：没框架/缺项/完好 三种情况都有合理输出', () =
   // 注入提示词的正文里绝不能出现 {{ —— renderPrompt 是严格模式，会抛错
   assert.ok(!gate.includes('{{'), '注入的正文里不许出现 {{')
   assert.ok(!renderGate({ frameworkRoot: null }).includes('{{'))
+})
+
+// ---------------------------------------------------------------------------
+// 前置条件（必需的外部 MCP）—— 用户口径："强制要求使用 playwright MCP"
+//
+// 这些测试**只用临时夹具**（自己造一个假的 `$DSH_HOME`），
+// 绝不读跑测机器上真实的 `~\.dsh` —— 否则"在没配 MCP 的机器上跑测试就红"，
+// 而那是环境差异，不是代码错。
+// ---------------------------------------------------------------------------
+
+/** 造一个假的 `$DSH_HOME`：一个 desktop profile，可选地配好 playwright。 */
+function fakeDshHome({ playwright = true, patchFile = true } = {}) {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'tf-prereq-'))
+  const dir = path.join(home, 'profiles', 'desktop')
+  fs.mkdirSync(dir, { recursive: true })
+  fs.writeFileSync(path.join(dir, 'package.json'), '{}')
+  if (patchFile) {
+    const body = playwright
+      ? ['plugins:', '  - id: mcp-playwright', '    config:', '      serverName: playwright', "      args:", "        - '@playwright/mcp'"]
+      : ['plugins:', '  - id: mcp-other', '    config:', '      serverName: other_mcp']
+    fs.writeFileSync(path.join(dir, 'cordis.patch.yml'), `${body.join('\n')}\n`)
+  }
+  return home
+}
+
+test('前置条件：能从 cordis.patch.yml 认出 serverName（不引 YAML 库）', () => {
+  const home = fakeDshHome({ playwright: true })
+  const d = detectProfileMcp({ dshHome: home, profile: 'desktop' })
+  assert.equal(d.exists, true)
+  assert.ok(d.serverNames.includes('playwright'), `要认出 serverName：${d.serverNames.join('、')}`)
+  assert.ok(d.ids.includes('mcp-playwright'), `要认出 - id：${d.ids.join('、')}`)
+
+  const r = checkPrerequisites({ dshHome: home, profile: 'desktop' })
+  assert.equal(r.items.find((i) => i.key === 'playwright').found, true)
+  assert.deepEqual(r.items.find((i) => i.key === 'playwright').where, ['desktop'])
+})
+
+test('前置条件：playwright 没配 → 必须报「必需 + 没有替代路径」，且给配置位置', () => {
+  const r = checkPrerequisites({ dshHome: fakeDshHome({ playwright: false }), profile: 'desktop' })
+  const pw = r.items.find((i) => i.key === 'playwright')
+  assert.equal(pw.required, true, 'playwright 必须是必需项')
+  assert.equal(pw.found, false)
+
+  const block = renderPrereqBlock(r)
+  assert.ok(block.includes('playwright'), '必须点名 playwright')
+  assert.ok(block.includes('必需'), '必须写明是必需项')
+  assert.ok(block.includes('未检测到'), '措辞必须是"未检测到"（不能说"不存在"）')
+  assert.ok(block.includes('没有替代路径'), '必须写清没有替代路径（用户口径）')
+  assert.ok(block.includes('cordis.patch.yml'), '必须告诉人配在哪')
+  assert.ok(block.includes('重启 DSH'), '必须提醒改完要重启')
+  assert.ok(!block.includes('{{'), '注入正文不许有 {{')
+})
+
+test('前置条件：配好了就不出声 —— 可选 MCP 缺失也不许变成每个会话的噪音', () => {
+  const r = checkPrerequisites({ dshHome: fakeDshHome({ playwright: true }), profile: 'desktop' })
+  assert.equal(r.items.find((i) => i.key === 'playwright').found, true)
+  // keyword / cr69 没配（夹具里就没有）—— 但必需项满足了 ⇒ 整段为空
+  assert.equal(renderPrereqBlock(r), '', '必需项满足时不许出任何提示')
+})
+
+test('前置条件：读不到 cordis.patch.yml 时说「无法判定」，不下否定结论', () => {
+  const r = checkPrerequisites({ dshHome: fakeDshHome({ patchFile: false }), profile: 'desktop' })
+  assert.equal(r.items.find((i) => i.key === 'playwright').found, undefined, '查不到 ≠ 不存在，不能返回 false')
+  assert.ok(renderPrereqBlock(r).includes('无法判定'))
+})
+
+test('前置条件：登记全对也不能把「缺必需 MCP」掩盖掉（renderGate 不许整段跳过）', () => {
+  const prereqs = checkPrerequisites({ dshHome: fakeDshHome({ playwright: false }), profile: 'desktop' })
+  const gate = renderGate({
+    frameworkRoot: 'X:\\faketree', agentsMdAutoLoaded: true, products: [], warnings: [], prereqs,
+  })
+  assert.ok(gate.includes('playwright'), '登记没问题 + 缺必需 MCP ⇒ 仍然要报，这是本版的核心修复')
+  assert.ok(!gate.includes('{{'))
+
+  // 反过来：配好了就回到"无事可报 = 空字符串"（不占 token）
+  const fine = checkPrerequisites({ dshHome: fakeDshHome({ playwright: true }), profile: 'desktop' })
+  assert.equal(renderGate({
+    frameworkRoot: 'X:\\faketree', agentsMdAutoLoaded: true, products: [], warnings: [], prereqs: fine,
+  }), '')
+})
+
+test('前置条件：profile 层不共享 —— 别的 profile 配了、当前 profile 没配 = 等于没配', () => {
+  const home = fakeDshHome({ playwright: true })
+  fs.mkdirSync(path.join(home, 'profiles', 'web'), { recursive: true })
+  fs.writeFileSync(path.join(home, 'profiles', 'web', 'package.json'), '{}')
+  fs.writeFileSync(path.join(home, 'profiles', 'web', 'cordis.patch.yml'), 'plugins: []\n')
+
+  const r = checkPrerequisites({ dshHome: home, profile: 'web' })
+  const pw = r.items.find((i) => i.key === 'playwright')
+  assert.equal(pw.found, true, '整体上"检测到了"（desktop 里有）')
+  assert.equal(pw.inActiveProfile, false, '但当前 profile 里没有 —— 这一项必须能分辨出来')
+  assert.deepEqual(pw.where, ['desktop'])
 })
 
 test('登记函数两种调用方式都行（位置参数 / 对象参数）', () => {

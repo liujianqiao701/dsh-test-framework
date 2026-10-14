@@ -90,6 +90,9 @@ description: {{MODULE}} 模块（{{PRODUCT}} → 顶级菜单「{{MENU}}」）�
 - **归档**：`report\` 下的报告**满 24 小时自动**移到 `_archive\报告归档\{{MODULE}}\<日期>\`（归档任务每小时检查）
 - **开跑前必做**：向用户**现问**账号密码与数据库地址（不要用 `_框架配置\环境与账密.md` 里记的）
 - **看着页面操作必须用 playwright MCP**（真实浏览器 + 真实点击/输入）；**每走完一屏截图后用 `read_image` 自己读一遍**，不许只存档
+  - ⚠️ **playwright MCP 是必需的、没有替代路径**：开工前先确认它可用（会话状态段落报"未检测到"就跑
+    `node _plugin\dsh-test-framework\lib\cli.js doctor`）；**没配就明确让用户先配**（profile 的 `cordis.patch.yml`，
+    **改完重启 DSH**）并**停下等**，不许用只读 DOM / 只抓报文 / 离线脚本凑合
 
 ## §8 版本索引（**一版一行，细节在各自的 `skill\<版本>\SKILL.md`**）
 
