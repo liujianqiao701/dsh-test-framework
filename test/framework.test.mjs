@@ -4,7 +4,7 @@
  * 跑法：`node --test test/`（或 `npm test`）。
  * 刻意**不引任何测试框架**，只 `node:test` + `node:assert`。
  */
-import { test } from 'node:test'
+import { test, after } from 'node:test'
 import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
@@ -48,11 +48,24 @@ import {
 const PRODUCT = '测试产品'
 let COUNTER = 0
 
-/** 建一个干净的一次性目录。 */
+/** 建一个干净的一次性目录。
+ *
+ * 建的目录都登记进 `TEMP_DIRS`，收尾时统一删（见下面的 `after` 钩子）。
+ * 以前只在个别用例里手删，跑一轮就漏一批 —— 实测本机 `%TEMP%` 里积了 900 多个
+ * `testfw-*` 空壳。跟框架里"垃圾不入库"是同一条道理：**自己造的临时物自己收拾**。
+ */
+const TEMP_DIRS = []
 function tmpdir() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), `testfw-${process.pid}-${COUNTER++}-`))
+  TEMP_DIRS.push(dir)
   return dir
 }
+
+after(() => {
+  for (const dir of TEMP_DIRS) {
+    try { fs.rmSync(dir, { recursive: true, force: true }) } catch { /* 已经没了就算了 */ }
+  }
+})
 
 /** 建一个已初始化的框架，返回根。 */
 function freshFramework(options = {}) {
@@ -477,6 +490,7 @@ test('renderGate：没框架/缺项/完好 三种情况都有合理输出', () =
 /** 造一个假的 `$DSH_HOME`：一个 desktop profile，可选地配好 playwright。 */
 function fakeDshHome({ playwright = true, patchFile = true } = {}) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'tf-prereq-'))
+  TEMP_DIRS.push(home)
   const dir = path.join(home, 'profiles', 'desktop')
   fs.mkdirSync(dir, { recursive: true })
   fs.writeFileSync(path.join(dir, 'package.json'), '{}')
@@ -561,6 +575,7 @@ test('前置条件：profile 层不共享 —— 别的 profile 配了、当前 
 test('登记函数两种调用方式都行（位置参数 / 对象参数）', () => {
   const mk = () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'testfw-shape-'))
+    TEMP_DIRS.push(root)
     scaffold({ root, product: PRODUCT, pluginVersion: '0.1.0', git: 'skip' })
     return root
   }
