@@ -255,7 +255,7 @@ test('密码只落 Markdown，不进 框架登记.json', () => {
   const SECRET = 'SuperSecret-123456'
   recordEnvironments(root, PRODUCT, [{
     name: '主环境', url: 'http://x/login', account: 'admin', password: SECRET,
-    dbHost: '10.0.0.1', dbPort: '5432', dbName: 'db', schema: 's', dbUser: 'medicom', dbPassword: `${SECRET}-db`,
+    dbHost: '10.0.0.1', dbPort: '5432', dbName: 'db', schema: 's', dbUser: 'user', dbPassword: `${SECRET}-db`,
   }], {})
 
   const md = fs.readFileSync(path.join(root, PRODUCT, '_框架配置', '环境与账密.md'), 'utf8')
