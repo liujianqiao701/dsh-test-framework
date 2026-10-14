@@ -2,6 +2,9 @@
 node_modules/
 *.tgz
 
+# 本机专用的「不许外传」词表：守卫要扫它，但它本身不能进仓库
+.privacy-blocklist.txt
+
 # 日志与系统垃圾
 *.log
 npm-debug.log*

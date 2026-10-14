@@ -791,3 +791,47 @@ test('report_gc 工具：默认只看不动里外一致（错一次就会真搬�
   assert.equal(data.plan.dryRun, true, '没传 dryRun 时必须规划成预演')
   assert.ok(data.plan.argv.includes('--dry-run'))
 })
+
+test('外传前复扫：整个包不许出现本机词表里的词（词表不进仓库，缺了就跳过）', (t) => {
+  const pkgRoot = path.join(TEMPLATE_ROOT, '..')
+  const blocklistPath = path.join(pkgRoot, '.privacy-blocklist.txt')
+  if (!fs.existsSync(blocklistPath)) {
+    // 公开仓库里没有这个词表 —— 跳过，而不是失败。
+    // 词表本身不能进仓库，否则"守卫"等于又泄一次。
+    t.skip('.privacy-blocklist.txt 不存在（公开仓库里正常）')
+    return
+  }
+  const words = fs
+    .readFileSync(blocklistPath, 'utf8')
+    .split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter((l) => l && !l.startsWith('#'))
+  assert.ok(words.length > 0, '词表不能是空的')
+
+  // 扫**整个包**，不只是 lib/ 与 templates/ ——
+  // 0.2.1 那次就是只扫了源码，结果 README 的变更记录里把产品名原文写了出来。
+  const SKIP_DIRS = new Set(['.git', 'node_modules'])
+  const SKIP_FILES = new Set(['.privacy-blocklist.txt']) // 词表是"词"的出处，扫它必然自指
+  const TEXT = /\.(js|mjs|cjs|md|json|yml|yaml|py|txt|sh|cmd)$/
+  const offenders = []
+  const walk = (dir, rel = '') => {
+    for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+      if (SKIP_DIRS.has(e.name) || SKIP_FILES.has(e.name)) continue
+      const p = path.join(dir, e.name)
+      const r = rel ? `${rel}/${e.name}` : e.name
+      if (e.isDirectory()) walk(p, r)
+      else if (TEXT.test(e.name)) {
+        const text = fs.readFileSync(p, 'utf8')
+        for (const w of words) {
+          if (text.includes(w)) offenders.push(`${r}  ← 命中「${w}」`)
+        }
+      }
+    }
+  }
+  walk(pkgRoot)
+  assert.deepEqual(
+    offenders,
+    [],
+    '这些文件里还残留着本机词表里的词 —— 发出去就会外传：\n' + offenders.join('\n'),
+  )
+})
