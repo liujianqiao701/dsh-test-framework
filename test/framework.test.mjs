@@ -27,6 +27,12 @@ import {
   listModules,
   defaultReqDocRoot,
   setReqDocRoot,
+  checkLinks,
+  registryLinkIssues,
+  upsertLinkSection,
+  LINK_TABLE_COLUMNS,
+  relationId,
+  endsOf,
 } from '../lib/framework.js'
 import { renderTemplate, KNOWN_KEYS, TEMPLATE_ROOT, readTemplate, listTemplateFiles } from '../lib/templates.js'
 import { checkPrerequisites, renderPrereqBlock, detectProfileMcp } from '../lib/prereq.js'
@@ -1097,4 +1103,573 @@ test('外传前复扫：整个包不许出现本机词表里的词（词表不�
     [],
     '这些文件里还残留着本机词表里的词 —— 发出去就会外传：\n' + offenders.join('\n'),
   )
+})
+
+// ---------------------------------------------------------------------------
+// 跨端业务关联（0.3.0：模块 = 叶子菜单；端 + 逻辑业务对象 + 关联边）
+// ---------------------------------------------------------------------------
+
+const ENDS = [
+  { name: '中心端', default: true },
+  { name: '成员端', default: false },
+]
+
+/** 产品登记文件的绝对路径。 */
+function registryFile(root) {
+  return path.join(root, PRODUCT, '_框架配置', '框架登记.json')
+}
+
+/** 直接改产品登记：补 / 换 `ends[]` 等（真实用法里这几段由人写，插件只读+回填）。 */
+function setRegistry(root, patch) {
+  const reg = JSON.parse(fs.readFileSync(registryFile(root), 'utf8'))
+  Object.assign(reg, patch)
+  reg.gates = recomputeGates(reg)
+  fs.writeFileSync(registryFile(root), JSON.stringify(reg, null, 2), 'utf8')
+  return reg
+}
+
+function moduleSkill(root, module) {
+  return fs.readFileSync(path.join(root, PRODUCT, module, 'SKILL.md'), 'utf8')
+}
+
+test('跨端：addModule 记下端 / 业务对象 / 关联边，并往模块 SKILL.md 写「§关联模块」段', () => {
+  const { root } = freshFramework()
+  setRegistry(root, { ends: ENDS })
+
+  const r = addModule({
+    root,
+    product: PRODUCT,
+    module: '缺药登记',
+    menu: '药品联动保障',
+    menuPath: '药品联动保障 > 缺药登记',
+    route: '/drugStorage',
+    slug: 'queyao-dengji',
+    version: '2606',
+    end: '中心端',
+    businessObjects: ['缺药登记'],
+    links: [{
+      to: '成员端-缺药登记',
+      kind: '审批流',
+      handoff: '中心端受理办结',
+      sharedTables: ['demo.t_stockout'],
+      routes: { from: '/drugStorage', to: '/memberApplication' },
+      nameVariance: '两端同名不同入口',
+      evidence: '某需求文档 §2.1',
+      status: '已确认',
+    }],
+  })
+
+  assert.equal(r.end, '中心端', '结果要回显端')
+  assert.deepEqual(r.businessObjects, ['缺药登记'])
+  assert.equal(r.relations.length, 1, '关联边要在结果里返回')
+  // 对端还没登记 → **只告警，不抛异常**（否则"先建这头、再建那头"就没法做）
+  assert.ok(r.warnings.some((w) => w.includes('还没登记')), r.warnings.join(' | '))
+
+  const reg = JSON.parse(fs.readFileSync(registryFile(root), 'utf8'))
+  const mod = reg.modules.find((m) => m.name === '缺药登记')
+  assert.equal(mod.end, '中心端')
+  assert.deepEqual(mod.businessObjects, ['缺药登记'])
+
+  assert.equal(reg.relations.length, 1)
+  const rel = reg.relations[0]
+  assert.equal(rel.from, '缺药登记')
+  assert.equal(rel.to, '成员端-缺药登记')
+  assert.equal(rel.businessObject, '缺药登记')
+  assert.equal(rel.kind, '审批流')
+  assert.equal(rel.handoff, '中心端受理办结')
+  assert.deepEqual(rel.sharedTables, ['demo.t_stockout'])
+  assert.deepEqual(rel.routes, { from: '/drugStorage', to: '/memberApplication' })
+  // 规范名（产品登记口径）必须**同时**写出去 —— 产品侧脚本按这套读
+  assert.equal(rel.tables, '`demo.t_stockout`', '规范名 tables（字符串）要写出去')
+  assert.equal(rel.fromRoute, '/drugStorage', '规范名 fromRoute 要写出去')
+  assert.equal(rel.toRoute, '/memberApplication', '规范名 toRoute 要写出去')
+  // `note` 是**人写的自由文本**：没显式给就**不许落键**（机器拼的散文会被后续会话当成已确认口径）
+  assert.ok(!('note' in rel), `只给 nameVariance/evidence/status 时不许写 note：${JSON.stringify(rel.note)}`)
+  assert.equal(rel.nameVariance, '两端同名不同入口', '兼容别名照旧落')
+  assert.equal(rel.evidence, '某需求文档 §2.1')
+  assert.equal(rel.status, '已确认')
+  assert.equal(rel.id, relationId('缺药登记', '成员端-缺药登记', '缺药登记'), 'id 要按 from|to|业务对象 稳定生成')
+  assert.equal(rel.registeredOnBothSides, false, '对端没登记 → 单向')
+
+  const md = moduleSkill(root, '缺药登记')
+  assert.ok(md.includes('## §关联模块'), '模块 SKILL.md 要有「§关联模块」段')
+  assert.ok(md.includes('| 成员端-缺药登记 |'), '关联行要写进表')
+  assert.ok(md.includes('缺药登记 → 成员端-缺药登记'), '方向要写清楚')
+  assert.ok(md.includes('demo.t_stockout'), '共享表要写进去')
+  assert.ok(!md.includes('| （待登记） |'), '占位行要被真实行替换掉')
+  // note 缺位 → 说明列现拼兜底串，且**必须带 `[自动]` 前缀**（声明"这是机器拼的"），与 JSON 里没有 note 不矛盾
+  assert.ok(md.includes('[自动] 两端同名不同入口'), '说明列要有 [自动] 兜底串：' + md.split('\n').filter((l) => l.includes('自动')).join(' | '))
+
+  // 幂等：同一条边再登记一次 → 登记里不堆第二条、SKILL.md 里不堆第二行 / 第二段
+  addModule({
+    root,
+    product: PRODUCT,
+    module: '缺药登记',
+    end: '中心端',
+    businessObjects: ['缺药登记'],
+    links: [{ to: '成员端-缺药登记', kind: '审批流', handoff: '中心端受理办结', sharedTables: ['demo.t_stockout'] }],
+  })
+  const reg2 = JSON.parse(fs.readFileSync(registryFile(root), 'utf8'))
+  assert.equal(reg2.relations.length, 1, '同一键的边要就地更新，不许堆重复行')
+  const md2 = moduleSkill(root, '缺药登记')
+  assert.equal(md2.split('## §关联模块').length - 1, 1, '「§关联模块」段只该有一个')
+  assert.equal(md2.split('| 成员端-缺药登记 |').length - 1, 1, '同一对端只该有一行')
+})
+
+test('跨端：两端都登记 → 自动变双向，checkLinks 无错误、闸门放行', () => {
+  const { root } = freshFramework()
+  setRegistry(root, { ends: ENDS })
+
+  addModule({
+    root, product: PRODUCT, module: '缺药登记', route: '/drugStorage', slug: 'queyao-dengji',
+    end: '中心端', businessObjects: ['缺药登记'], links: [{ to: '成员端-缺药登记', kind: '审批流' }],
+  })
+  addModule({
+    root, product: PRODUCT, module: '成员端-缺药登记', route: '/memberApplication', slug: 'member-queyao',
+    end: '成员端', businessObjects: ['缺药登记'], links: [{ to: '缺药登记', kind: '审批流' }],
+  })
+
+  const reg = readRegistry(root, PRODUCT).registry
+  assert.equal(reg.relations.length, 2)
+  assert.deepEqual(reg.relations.map((x) => x.registeredOnBothSides), [true, true], '两边都登记后自动变双向')
+
+  const res = checkLinks({ root, product: PRODUCT })
+  assert.deepEqual(res.errors, [])
+  assert.equal(res.ok, true)
+  assert.equal(res.summary.modules, 2)
+  assert.equal(res.summary.relations, 2)
+  assert.deepEqual(res.summary.byEnd, { 中心端: 1, 成员端: 1 })
+  assert.equal(res.summary.defaultEnd, '中心端')
+  assert.equal(recomputeGates(reg).linksChecked, true)
+})
+
+test('跨端：只登记一边 → checkLinks 报 E_ONE_WAY，闸门 linksChecked 拦住并给出提问', () => {
+  const { root } = freshFramework()
+  setRegistry(root, { ends: ENDS })
+  addModule({
+    root, product: PRODUCT, module: '缺药登记', route: '/drugStorage', slug: 'queyao-dengji',
+    end: '中心端', businessObjects: ['缺药登记'], links: [{ to: '成员端-缺药登记', kind: '审批流' }],
+  })
+  addModule({
+    root, product: PRODUCT, module: '成员端-缺药登记', route: '/memberApplication', slug: 'member-queyao',
+    end: '成员端', businessObjects: ['缺药登记'], // 刻意不登记反向边
+  })
+
+  const res = checkLinks({ root, product: PRODUCT })
+  assert.equal(res.ok, false)
+  assert.deepEqual(res.errors.map((e) => e.code), ['E_ONE_WAY'])
+  assert.equal(res.errors[0].target, '缺药登记 → 成员端-缺药登记')
+  assert.ok(res.errors[0].message.includes('成员端-缺药登记 → 缺药登记'), '要说清缺的是哪条反向边')
+
+  const reg = readRegistry(root, PRODUCT).registry
+  assert.equal(recomputeGates(reg).linksChecked, false, '单向边不许放行')
+  const ask = missingItems(reg).find((a) => a.key === 'linksChecked')
+  assert.ok(ask, '要单独摆出「关联登记」这条提问')
+  assert.ok(ask.ask.includes('E_ONE_WAY'), '要把未过的判据告诉人')
+  assert.ok(ask.ask.includes('缺药登记'), '要点名涉及的模块')
+})
+
+test('跨端：checkLinks 抓链路断点 / 端前缀 / 业务对象缺失 / 路由漂移', () => {
+  const { root } = freshFramework()
+  setRegistry(root, {
+    ends: ENDS,
+    flows: [{ name: '缺药登记链路', order: ['缺药登记', '成员端-缺药登记', '余缺调拨'] }],
+  })
+  addModule({
+    root, product: PRODUCT, module: '缺药登记', route: '/drugStorage', slug: 'queyao-dengji',
+    end: '中心端', businessObjects: ['缺药登记'],
+    links: [{ to: '成员端-缺药登记', kind: '审批流', routes: { from: '/drugStorage', to: '/somewhereElse' } }],
+  })
+  addModule({
+    root, product: PRODUCT, module: '成员端-缺药登记', route: '/memberApplication', slug: 'member-queyao',
+    end: '成员端', businessObjects: ['缺药登记'],
+  })
+  // 非默认端、名字没带端前缀、也没写业务对象 —— 两条告警同时命中，但**不许抛**
+  const bad = addModule({
+    root, product: PRODUCT, module: '短缺登记', route: '/shortDrugAssessment', end: '成员端',
+  })
+  assert.ok(bad.warnings.some((w) => w.includes('端前缀')), bad.warnings.join(' | '))
+  assert.ok(bad.warnings.some((w) => w.includes('businessObjects')), bad.warnings.join(' | '))
+
+  const reg = readRegistry(root, PRODUCT).registry
+  const pure = registryLinkIssues(reg)
+  assert.ok(pure.errors.some((e) => e.code === 'E_END_PREFIX'), '端前缀错了要报错')
+  assert.ok(pure.warnings.some((w) => w.code === 'W_NO_BUSINESS_OBJECT'), '业务对象缺失要告警')
+  assert.equal(recomputeGates(reg).linksChecked, false, 'E_END_PREFIX 属于"纯登记就能判"的一类')
+
+  const res = checkLinks({ root, product: PRODUCT })
+  assert.ok(res.errors.some((e) => e.code === 'E_FLOW_BROKEN'), res.errors.map((e) => e.code).join(','))
+  const drift = res.warnings.find((w) => w.code === 'W_ROUTE_DRIFT')
+  assert.ok(drift, '关联边路由与模块登记路由对不上要给提示')
+  assert.ok(drift.message.includes('/somewhereElse') && drift.message.includes('/memberApplication'))
+  // 路由漂移只是 warning —— 不许凭它拦人
+  assert.equal(res.errors.some((e) => e.code === 'W_ROUTE_DRIFT'), false)
+})
+
+test('跨端：整端一个模块（模块名 == 端名）是允许的例外，不许按端前缀报错', () => {
+  const { root } = freshFramework()
+  setRegistry(root, { ends: [...ENDS, { name: '患者端', default: false }] })
+  // 例外：端自己就是一个模块（H5 端不拆模块，业务对象用 businessObjects 表达）；两边都登记 → 没有单向边
+  addModule({
+    root, product: PRODUCT, module: '患者端', route: '/CPR/patient/', slug: 'huanzhe-duan',
+    end: '患者端', businessObjects: ['缺药登记'],
+    links: [{ to: '缺药登记', kind: '上游依赖' }],
+  })
+  addModule({
+    root, product: PRODUCT, module: '缺药登记', route: '/drugStorage', slug: 'queyao-dengji',
+    end: '中心端', businessObjects: ['缺药登记'],
+    links: [{ to: '患者端', kind: '上游依赖' }],
+  })
+  const reg = readRegistry(root, PRODUCT).registry
+  const pure = registryLinkIssues(reg)
+  assert.deepEqual(pure.errors, [], `整端一个模块不该报端前缀错：${JSON.stringify(pure.errors)}`)
+  // 端名当链路节点也要放行（这条边一端是端名、一端是模块名）
+  assert.deepEqual(registryLinkIssues(reg).errors, [])
+  const whole = pure.warnings.find((w) => w.code === 'W_WHOLE_END_MODULE')
+  assert.ok(whole, '例外要留一条提示（提醒写进 模块关联.md §1），但不拦人')
+  assert.equal(whole.target, '患者端')
+
+  // 同一个端下**别的**模块，照旧必须带前缀
+  addModule({ root, product: PRODUCT, module: '短缺药品', end: '患者端', businessObjects: ['短缺药品'] })
+  const pure2 = registryLinkIssues(readRegistry(root, PRODUCT).registry)
+  assert.deepEqual(pure2.errors.map((e) => e.code), ['E_END_PREFIX'], '除"端本身"外，非默认端仍要带前缀')
+  assert.equal(pure2.errors[0].target, '短缺药品')
+  assert.ok(pure2.errors[0].message.includes('患者端-'), '报错要说清该带什么前缀')
+})
+
+test('跨端：路由漂移只比**路径** —— 说明文字 / 查询参数 / 占位符写法不同不算漂移', () => {
+  const { root } = freshFramework()
+  setRegistry(root, { ends: ENDS })
+  addModule({
+    root, product: PRODUCT, module: '缺药登记', route: '/drugStorage', slug: 'queyao-dengji',
+    end: '中心端', businessObjects: ['缺药登记'],
+  })
+  const patch = (routes) => {
+    const reg = readRegistry(root, PRODUCT).registry
+    reg.relations = [{
+      id: 'R-x', from: '缺药登记', to: '缺药登记', kind: '关联', businessObject: '缺药登记', ...routes,
+    }]
+    fs.writeFileSync(registryFile(root), JSON.stringify(reg, null, 2), 'utf8')
+  }
+  const driftOf = () => checkLinks({ root, product: PRODUCT }).warnings.filter((w) => w.code === 'W_ROUTE_DRIFT')
+
+  // 同一路径、不同写法（散文前缀 + 查询参数 + 占位符名字不同）→ 不该报
+  patch({ fromRoute: 'H5 `/drugStorage?orgCode=<机构>`', toRoute: 'H5 `/drugStorage?orgCode=<机构编码>`' })
+  assert.deepEqual(driftOf(), [], '同一条路由的两种写法不是漂移')
+
+  // 路径真的不同 → 照旧要报（别把检查削没了）
+  patch({ fromRoute: 'H5 `/drugStorage`', toRoute: 'H5 `/memberApplication`' })
+  const drift = driftOf()
+  assert.equal(drift.length, 1)
+  assert.ok(drift[0].message.includes('/memberApplication'), drift[0].message)
+})
+
+test('跨端：没有 ends[] 也没有 relations[] 时，linksChecked 直接视为通过（老产品不被拦）', () => {
+  const { root } = freshFramework()
+  addModule({ root, product: PRODUCT, module: '缺药登记', slug: 'queyao-dengji' })
+  const reg = readRegistry(root, PRODUCT).registry
+  assert.deepEqual(reg.ends, [])
+  assert.deepEqual(reg.relations, [])
+  assert.deepEqual(endsOf(reg).list, [])
+  assert.equal(recomputeGates(reg).linksChecked, true, '老框架（无端、无关联）不许被这条拦住')
+  assert.deepEqual(missingItems(reg).filter((a) => a.key === 'linksChecked'), [], '没有关联就不该刷这条提问')
+  const res = checkLinks({ root, product: PRODUCT })
+  assert.equal(res.ok, true)
+  assert.deepEqual(res.errors, [])
+})
+
+test('跨端：「§关联模块」段插在「## 归档索引」之前，且反复登记不堆段', () => {
+  const { root } = freshFramework()
+  setRegistry(root, { ends: ENDS })
+  addModule({ root, product: PRODUCT, module: '缺药登记', slug: 'queyao-dengji', end: '中心端', businessObjects: ['缺药登记'] })
+
+  // 模拟「0.2.x 建的老模块」：先把骨架里那一段摘掉（归档索引段是骨架自带的，留着不动）
+  const file = path.join(root, PRODUCT, '缺药登记', 'SKILL.md')
+  const raw = fs.readFileSync(file, 'utf8')
+  const cut = raw.replace(/## §关联模块[\s\S]*?(?=\n## )/, '')
+  assert.ok(!cut.includes('## §关联模块'), '前置条件：摘掉后不该还有这一段')
+  assert.ok(cut.includes('## 归档索引'), '前置条件：归档索引段本来就在')
+  fs.writeFileSync(file, cut, 'utf8')
+
+  const headings = (text) => text.split(/\r?\n/).filter((l) => /^## /.test(l))
+
+  addModule({
+    root, product: PRODUCT, module: '缺药登记', end: '中心端', businessObjects: ['缺药登记'],
+    links: [{ to: '成员端-缺药登记', kind: '审批流' }],
+  })
+  const md = fs.readFileSync(file, 'utf8')
+  assert.equal(md.split('## §关联模块').length - 1, 1)
+  const hs = headings(md)
+  const iLink = hs.findIndex((h) => h.includes('§关联模块'))
+  const iArchive = hs.findIndex((h) => h.includes('归档索引'))
+  assert.ok(iLink >= 0 && iArchive >= 0, `两段都该在：${hs.join(' | ')}`)
+  assert.ok(iLink < iArchive, '关联段要插在归档索引之前（归档索引永远该是最后一段）')
+
+  // 再登记一次同一条边 → 仍是「一段 + 一行」
+  addModule({
+    root, product: PRODUCT, module: '缺药登记', end: '中心端', businessObjects: ['缺药登记'],
+    links: [{ to: '成员端-缺药登记', kind: '审批流' }],
+  })
+  const md2 = fs.readFileSync(file, 'utf8')
+  assert.equal(md2.split('## §关联模块').length - 1, 1)
+  assert.equal(md2.split('| 成员端-缺药登记 |').length - 1, 1)
+  assert.deepEqual(headings(md2), hs, '重复登记不许改变段落结构')
+})
+
+test('upsertLinkSection：没行不动、段在就就地 upsert、段不在则插在归档索引之前', () => {
+  const rows = [[
+    '成员端-缺药登记', '中心端 → 成员端-缺药登记', '审批流', '缺药登记',
+    '受理办结', 'demo.t_stockout', '/memberApplication', '——',
+  ]]
+  const noRows = upsertLinkSection('# 模块\n', [])
+  assert.equal(noRows.action, 'no-rows')
+  assert.equal(noRows.md, '# 模块\n', '没有关联行时一个字都不许动')
+
+  const withSection = [
+    '# 模块', '',
+    '## §关联模块（跨端 / 上下游）', '',
+    `| ${LINK_TABLE_COLUMNS.join(' | ')} |`,
+    `| ${LINK_TABLE_COLUMNS.map(() => '---').join(' | ')} |`,
+    `| ${LINK_TABLE_COLUMNS.map(() => '（待登记）').join(' | ')} |`, '',
+    '## 归档索引', '', '- 旧报告', '',
+  ].join('\n')
+  const r1 = upsertLinkSection(withSection, rows)
+  assert.equal(r1.ok, true)
+  assert.equal(r1.action, 'section-upsert')
+  assert.ok(r1.md.includes('成员端-缺药登记'))
+  assert.ok(!r1.md.includes('（待登记）'), '占位行要被真实行替换')
+  assert.equal(r1.md.split('## §关联模块').length - 1, 1)
+
+  const r2 = upsertLinkSection(r1.md, rows)
+  assert.equal(r2.action, 'section-unchanged', '同一条边重复 upsert 应当无变化')
+  assert.equal(r2.md, r1.md)
+
+  const noSection = ['# 模块', '', '## 归档索引', '', '- 旧报告', ''].join('\n')
+  const r3 = upsertLinkSection(noSection, rows)
+  assert.equal(r3.action, 'insert-before-archive')
+  assert.ok(r3.md.indexOf('## §关联模块') < r3.md.indexOf('## 归档索引'))
+})
+
+test('跨端：重复登记不许抹掉已记字段；占位符路由不算路由（不许据此报漂移）', () => {
+  const { root } = freshFramework()
+  setRegistry(root, { ends: ENDS })
+
+  addModule({
+    root, product: PRODUCT, module: '缺药登记', slug: 'queyao-dengji', menu: '药品联动保障',
+    menuPath: '药品联动保障 > 缺药登记', route: '/drugStorage', doc: '某地个性化需求.docx', version: '2606',
+    end: '中心端', businessObjects: ['缺药登记'],
+  })
+  // 对端只建目录与端，**刻意不填 route / menu / doc / version**
+  addModule({ root, product: PRODUCT, module: '成员端-缺药登记', slug: 'member-queyao', end: '成员端', businessObjects: ['缺药登记'] })
+
+  // 补反向边（这一步不该顺手把上一轮记下的字段清空 —— 真机上就是这么把路由抹成「（待补）」的）
+  addModule({
+    root, product: PRODUCT, module: '缺药登记', end: '中心端',
+    links: [{ to: '成员端-缺药登记', kind: '审批流', routes: { from: '/drugStorage', to: '/memberApplication' } }],
+  })
+
+  const mod = readRegistry(root, PRODUCT).registry.modules.find((m) => m.name === '缺药登记')
+  assert.equal(mod.route, '/drugStorage', '重复登记不许把路由抹成「（待补）」')
+  assert.equal(mod.menu, '药品联动保障')
+  assert.equal(mod.menuPath, '药品联动保障 > 缺药登记')
+  assert.equal(mod.doc, '某地个性化需求.docx')
+  assert.equal(mod.version, '2606')
+  assert.equal(mod.end, '中心端')
+  assert.deepEqual(mod.businessObjects, ['缺药登记'])
+  const routeMd = fs.readFileSync(path.join(root, PRODUCT, '_框架配置', '模块路由.md'), 'utf8')
+  assert.ok(routeMd.includes('| /drugStorage |'), '产品级 模块路由.md 里的路由也不许被回填成占位符')
+
+  // 对端根本没填路由 → 无从比对，不许凭「（待补）」报路由漂移
+  const res = checkLinks({ root, product: PRODUCT })
+  assert.deepEqual(res.warnings.filter((w) => w.code === 'W_ROUTE_DRIFT'), [], JSON.stringify(res.warnings))
+})
+
+test('跨端：兼容人手写的登记口径（ends[].key / flows[].nodes / fromRoute / 端名当节点）', () => {
+  const { root } = freshFramework()
+  // 手写口径：端用 `key`（不是 name）；链路用 `nodes`（不是 order）；路由是扁平的 fromRoute / toRoute
+  setRegistry(root, {
+    ends: [
+      { key: '中心端', default: true, menuCount: 15 },
+      { key: '成员端', default: false, menuCount: 9 },
+      { key: '患者端', default: false, note: '整端不拆模块，用 businessObjects 表达' },
+    ],
+    flows: [{ id: 'F1', name: '缺药登记三端审批流', nodes: ['患者端', '成员端-缺药登记', '缺药登记'] }],
+  })
+  addModule({ root, product: PRODUCT, module: '缺药登记', route: '/drugStorage', slug: 'queyao-dengji', end: '中心端', businessObjects: ['缺药登记'] })
+  addModule({ root, product: PRODUCT, module: '成员端-缺药登记', route: '/drugStorage', slug: 'member-queyao', end: '成员端', businessObjects: ['缺药登记'] })
+
+  const reg = readRegistry(root, PRODUCT).registry
+  assert.equal(endsOf(reg).defaultName, '中心端', '默认端要认得 `key` 字段')
+  assert.deepEqual(endsOf(reg).list.map((e) => e.name), ['中心端', '成员端', '患者端'])
+
+  // 按手写口径直接补两条对称边：一端是**端名**（患者端整端不拆模块），一端是模块名
+  reg.relations = [
+    { id: 'L1-1:患者端->成员端-缺药登记', from: '患者端', to: '成员端-缺药登记', kind: '审批流', businessObject: '缺药登记', flow: '缺药登记三端审批流', tables: 'demo.t_stockout', fromRoute: 'H5 `/CPR/patient/`', toRoute: '`/drugStorage`（待审核）' },
+    { id: 'L1-1:成员端-缺药登记->患者端', from: '成员端-缺药登记', to: '患者端', kind: '审批流', businessObject: '缺药登记', flow: '缺药登记三端审批流', tables: 'demo.t_stockout', fromRoute: '`/drugStorage`（待审核）', toRoute: 'H5 `/CPR/patient/`' },
+    { id: 'L1-2:成员端-缺药登记->缺药登记', from: '成员端-缺药登记', to: '缺药登记', kind: '审批流', businessObject: '缺药登记', flow: '缺药登记三端审批流', fromRoute: '`/drugStorage`（待审核）', toRoute: '`/drugStorage`（待办结）' },
+    { id: 'L1-2:缺药登记->成员端-缺药登记', from: '缺药登记', to: '成员端-缺药登记', kind: '审批流', businessObject: '缺药登记', flow: '缺药登记三端审批流', fromRoute: '`/drugStorage`（待办结）', toRoute: '`/drugStorage`（待审核）' },
+  ]
+  reg.gates = recomputeGates(reg)
+  fs.writeFileSync(registryFile(root), JSON.stringify(reg, null, 2), 'utf8')
+
+  const res = checkLinks({ root, product: PRODUCT })
+  assert.deepEqual(res.errors, [], `端名是合法链路节点，不该报模块缺失：${JSON.stringify(res.errors)}`)
+  assert.equal(res.ok, true)
+  assert.equal(res.summary.flows, 1)
+  assert.equal(res.summary.relations, 4)
+  assert.deepEqual(res.warnings.filter((w) => w.code === 'W_ROUTE_DRIFT'), [], '扁平路由与模块路由能对上就不该报漂移')
+  assert.equal(recomputeGates(reg).linksChecked, true)
+
+  // 端名与模块名都不是 → 该报还得报
+  reg.relations.push({ from: '患者端', to: '不存在的模块', kind: '关联' })
+  fs.writeFileSync(registryFile(root), JSON.stringify(reg, null, 2), 'utf8')
+  const res2 = checkLinks({ root, product: PRODUCT })
+  const missing = res2.errors.filter((e) => e.code === 'E_MODULE_MISSING')
+  assert.deepEqual(missing.map((e) => e.target), ['不存在的模块'], '端名放行、模块名照样要查')
+  assert.equal(res2.ok, false)
+})
+
+test('跨端：modules[] 里同名重复登记要告警（W_DUPLICATE_MODULE，只告警不拦人）', () => {
+  const { root } = freshFramework()
+  setRegistry(root, { ends: ENDS })
+  addModule({ root, product: PRODUCT, module: '缺药登记', slug: 'queyao-dengji', end: '中心端', businessObjects: ['缺药登记'] })
+  const reg = readRegistry(root, PRODUCT).registry
+  reg.modules.push({ ...reg.modules[0], route: '/anotherRoute' })
+  const issues = registryLinkIssues(reg)
+  const dup = issues.warnings.find((w) => w.code === 'W_DUPLICATE_MODULE')
+  assert.ok(dup, '重复条目要告警')
+  assert.equal(dup.target, '缺药登记')
+  assert.deepEqual(issues.errors, [], '重复登记只是登记卫生问题，不该拦住人')
+  assert.equal(recomputeGates(reg).linksChecked, true)
+})
+
+test('跨端：links 入参也收规范名（tables / fromRoute / toRoute / note），没值就不留空壳键', () => {
+  const { root } = freshFramework()
+  setRegistry(root, { ends: ENDS })
+  addModule({
+    root, product: PRODUCT, module: '缺药登记', slug: 'queyao-dengji', end: '中心端', businessObjects: ['缺药登记'],
+    links: [{
+      to: '成员端-缺药登记', kind: '审批流',
+      tables: '`demo.t_stockout`', fromRoute: '/drugStorage', toRoute: '/memberApplication', note: '两端同路由不同菜单名',
+    }],
+  })
+  const rel = readRegistry(root, PRODUCT).registry.relations[0]
+  assert.deepEqual(rel.sharedTables, ['demo.t_stockout'], '规范名 tables 入参要解析成表名数组')
+  assert.equal(rel.tables, '`demo.t_stockout`')
+  assert.deepEqual(rel.routes, { from: '/drugStorage', to: '/memberApplication' }, '扁平的 fromRoute/toRoute 要归一进 routes')
+  assert.equal(rel.note, '两端同路由不同菜单名')
+
+  // 只写「跟谁有关联」时，规范字段一个空壳键都不留
+  addModule({
+    root, product: PRODUCT, module: '短缺评估', slug: 'duanque-pinggu', end: '中心端',
+    businessObjects: ['短缺评估'], links: [{ to: '缺药登记' }],
+  })
+  const bare = readRegistry(root, PRODUCT).registry.relations.find((r) => r.from === '短缺评估')
+  for (const k of ['tables', 'fromRoute', 'toRoute', 'note']) {
+    assert.ok(!(k in bare), `没给值的规范键不该留空壳：${k}`)
+  }
+  // `note` 也不许"机器拼一个"顶上（人写的散文才配进这个键）
+  assert.equal(bare.status, '待核', '状态默认值照旧落在兼容别名上')
+})
+
+test('跨端：重复登记一条边不许毁掉已有数据（note / 散文路由 / 已确认状态 / 共享表 / flow）', () => {
+  const { root } = freshFramework()
+  setRegistry(root, { ends: ENDS })
+  addModule({
+    root, product: PRODUCT, module: '缺药登记', route: '/drugStorage', slug: 'queyao-dengji',
+    end: '中心端', businessObjects: ['缺药登记'],
+    links: [{
+      to: '成员端-缺药登记', kind: '审批流', handoff: '中心端受理办结', flow: '缺药登记三端审批流',
+      tables: '`demo.t_stockout`', fromRoute: 'H5 `/drugStorage`（待办结）', toRoute: 'H5 `/memberApplication`',
+      note: '两端同路由不同菜单名', accounts: ['ljq1'], evidence: '某需求文档 §2.1', status: '已确认',
+    }],
+  })
+  // 只补一句"我跟它有关联"（不给 note / 路由 / 共享表 / flow / 状态）
+  addModule({ root, product: PRODUCT, module: '缺药登记', end: '中心端', links: [{ to: '成员端-缺药登记' }] })
+
+  const rels = readRegistry(root, PRODUCT).registry.relations
+  assert.equal(rels.length, 1, '同一件事不许堆成两条边')
+  const rel = rels[0]
+  assert.equal(rel.flow, '缺药登记三端审批流', '没给 flow → 沿用已有')
+  assert.equal(rel.kind, '审批流', '没给 kind → 不许降级成「关联」')
+  assert.equal(rel.status, '已确认', '没给 status → 不许从「已确认」降级成「待核」')
+  assert.equal(rel.note, '两端同路由不同菜单名', '没给 note → 不许被拼接串覆盖')
+  assert.equal(rel.handoff, '中心端受理办结')
+  assert.equal(rel.tables, '`demo.t_stockout`', '没给 tables → 不许丢')
+  assert.deepEqual(rel.sharedTables, ['demo.t_stockout'])
+  assert.equal(rel.fromRoute, 'H5 `/drugStorage`（待办结）', '手写的散文形态 fromRoute 要原样留着')
+  assert.equal(rel.toRoute, 'H5 `/memberApplication`')
+  assert.deepEqual(rel.accounts, ['ljq1'])
+  assert.equal(rel.evidence, '某需求文档 §2.1')
+
+  // 显式给了就覆盖（不是"只进不出"）
+  addModule({
+    root, product: PRODUCT, module: '缺药登记', end: '中心端',
+    links: [{ to: '成员端-缺药登记', kind: '数据同源', status: '待核', note: '改过的说明' }],
+  })
+  const rel2 = readRegistry(root, PRODUCT).registry.relations[0]
+  assert.equal(rel2.kind, '数据同源')
+  assert.equal(rel2.status, '待核')
+  assert.equal(rel2.note, '改过的说明')
+})
+
+test('跨端：note 是"人写的自由文本" —— 只给 nameVariance 时不写 note，兜底串带 [自动] 且只进 markdown', () => {
+  const { root } = freshFramework()
+  setRegistry(root, { ends: ENDS })
+  const registryText = () => fs.readFileSync(registryFile(root), 'utf8')
+
+  // ① 只给 nameVariance（不给 note）→ JSON 里**没有** note 键；说明列渲染 `[自动] …`
+  addModule({
+    root, product: PRODUCT, module: '缺药登记', slug: 'queyao-dengji', end: '中心端',
+    businessObjects: ['缺药登记'],
+    links: [{ to: '成员端-缺药登记', kind: '审批流', nameVariance: '两端同名不同入口' }],
+  })
+  const rel = readRegistry(root, PRODUCT).registry.relations[0]
+  assert.ok(!('note' in rel), '只给 nameVariance 时不许写 note')
+  assert.equal(rel.nameVariance, '两端同名不同入口', '兼容别名照旧落')
+  const md = moduleSkill(root, '缺药登记')
+  assert.ok(md.includes('[自动] 两端同名不同入口'), '说明列要有 [自动] 兜底串')
+  assert.ok(!registryText().includes('[自动]'), '`[自动]` 是渲染期产物，绝不许出现在登记 JSON 里')
+
+  // ② 显式给了 note → 落键；说明列照抄人话，**不带** `[自动]`
+  addModule({
+    root, product: PRODUCT, module: '缺药登记', end: '中心端', businessObjects: ['缺药登记'],
+    links: [{ to: '成员端-缺药登记', kind: '审批流', note: '成员端初审通过才提交中心端（人确认）' }],
+  })
+  const rel2 = readRegistry(root, PRODUCT).registry.relations[0]
+  assert.equal(rel2.note, '成员端初审通过才提交中心端（人确认）')
+  const md2 = moduleSkill(root, '缺药登记')
+  assert.ok(md2.includes('成员端初审通过才提交中心端（人确认）'), '人写的 note 要出现在说明列')
+  assert.ok(!md2.includes('[自动] 成员端初审通过'), '有 note 时不该再拼兜底串')
+  assert.ok(!registryText().includes('[自动]'))
+})
+
+test('跨端：test_framework_link 是只读工具，能如实报出错误与摘要', async () => {
+  const tool = TOOLS.find((t) => t.name === 'test_framework_link')
+  assert.ok(tool, '缺 test_framework_link 工具')
+  assert.equal(tool.isConcurrencySafe(), true, '只读工具应当并发安全')
+  assert.deepEqual(tool.parameters.required, [], '不传 product 时应当体检全部产品')
+  const props = tool.parameters.properties ?? {}
+  assert.ok(props.root && props.product && props.detail)
+  assert.equal(tool.presentCall({}).kind, 'read', '只读工具不许标成写')
+
+  const { root } = freshFramework()
+  setRegistry(root, { ends: ENDS })
+  addModule({
+    root, product: PRODUCT, module: '缺药登记', slug: 'queyao-dengji', end: '中心端',
+    businessObjects: ['缺药登记'], links: [{ to: '成员端-缺药登记' }],
+  })
+  addModule({
+    root, product: PRODUCT, module: '成员端-缺药登记', slug: 'member-queyao', end: '成员端',
+    businessObjects: ['缺药登记'],
+  })
+
+  const before = fs.readFileSync(registryFile(root), 'utf8')
+  const out = await tool.execute({ root, product: PRODUCT }, {})
+  assert.ok(out.text.includes('跨端关联体检'), out.text.slice(0, 60))
+  assert.ok(out.text.includes('E_ONE_WAY'), '单向边要出现在错误清单里')
+  const data = JSON.parse(out.dataJson)
+  assert.equal(data.ok, false)
+  assert.equal(data.products[0].summary.relations, 1)
+  assert.equal(fs.readFileSync(registryFile(root), 'utf8'), before, '只读工具不许改登记文件')
 })

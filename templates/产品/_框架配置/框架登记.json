@@ -5,14 +5,19 @@
   "createdBy": "{{GENERATED_BY}}",
   "pluginVersion": "{{PLUGIN_VERSION}}",
   "updatedAt": "{{DATE}}",
+  "ends": [],
   "documents": [],
   "environments": [],
   "modules": [],
+  "relations": [],
+  "flows": [],
   "gates": {
     "documentsRegistered": false,
     "versionsConfirmed": false,
     "crossDocChecked": false,
     "splitConfirmed": false,
-    "environmentRegistered": false
+    "environmentRegistered": false,
+    "modulesRegistered": false,
+    "linksChecked": false
   }
 }
