@@ -1,0 +1,23 @@
+{
+  "schema": "dsh-test-framework/product/v1",
+  "product": "{{PRODUCT}}",
+  "frameworkRoot": "{{FRAMEWORK_ROOT}}",
+  "createdBy": "{{GENERATED_BY}}",
+  "pluginVersion": "{{PLUGIN_VERSION}}",
+  "updatedAt": "{{DATE}}",
+  "ends": [],
+  "documents": [],
+  "environments": [],
+  "modules": [],
+  "relations": [],
+  "flows": [],
+  "gates": {
+    "documentsRegistered": false,
+    "versionsConfirmed": false,
+    "crossDocChecked": false,
+    "splitConfirmed": false,
+    "environmentRegistered": false,
+    "modulesRegistered": false,
+    "linksChecked": false
+  }
+}
