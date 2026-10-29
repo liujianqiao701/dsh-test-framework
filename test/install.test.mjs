@@ -19,7 +19,7 @@ import {
   applyInstall,
   applyUninstall,
   defaultDshHome,
-} from '../lib/install.js'
+} from '../src/install.js'
 
 const PLUGIN_DIR = path.resolve(import.meta.dirname, '..')
 const PLUGIN_NAME = 'dsh-test-framework'
@@ -106,8 +106,12 @@ test('link 模式：备份 + 写依赖与 bundles + 建目录联接，且不动�
     const linkPath = path.join(home, 'profiles', 'desktop', 'node_modules', PLUGIN_NAME)
     assert.ok(fs.existsSync(linkPath), '联接必须存在')
     assert.equal(fs.realpathSync(linkPath).toLowerCase(), fs.realpathSync(PLUGIN_DIR).toLowerCase())
-    // 通过联接能读到插件入口
-    assert.ok(fs.existsSync(path.join(linkPath, 'lib', 'index.js')))
+    // 通过联接能读到插件入口 —— **入口从 package.json 的 main 读，别写死目录**：
+    // 2026-10-27 把可读源码挪到 src\、发布件改成 dist\（混淆产物）时，这条写死的
+    // `lib/index.js` 就成了唯一的误红点（真入口明明是好的）。布局一改就误红 = 坏守卫。
+    const entry = JSON.parse(fs.readFileSync(path.join(PLUGIN_DIR, 'package.json'), 'utf8')).main
+    assert.ok(entry, 'package.json 必须声明 main')
+    assert.ok(fs.existsSync(path.join(linkPath, entry)), `入口 ${entry} 必须能通过联接读到`)
   } finally {
     cleanup(home)
   }

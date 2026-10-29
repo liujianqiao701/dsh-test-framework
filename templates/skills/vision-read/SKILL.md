@@ -67,7 +67,7 @@ whenToUse: 用户说「看下这张图」「截图里写了什么」「UI 还原
 | **我自己看图（默认）** | 框架工具 `read_image`（传本机图片路径）—— 秒级 |
 | 要第三方复读 / 交叉核对 | 千问桥 `qvb`（**备用通道**，见 §4） |
 | 页面取证 + 真实操作 | playwright MCP 截图 + 操作，**每屏截图后自己读** |
-| 接口 / DOM / 库取证 | `keyword_mcp` 报文落盘 / DOM 取值 / `db-seeding` 只读 SQL |
+| 接口 / DOM / 库取证 | playwright `browser_network_requests`（接口）/ `browser_snapshot`、`browser_evaluate`（DOM）/ `db-seeding` 只读 SQL |
 
 - **读之前先想清楚要看什么**：与其"描述这张图"，不如带着问题读 ——
   「这个表格第三列的数值是多少」「这个报错弹窗的标题是什么」「按钮是不是被右边缘截断了」。

@@ -1,21 +1,20 @@
-MIT License
+版权所有 (c) 2026 liujianqiao。保留所有权利 / All rights reserved.
 
-Copyright (c) 2026 liujianqiao
+本软件（dsh-test-framework）及其全部源码、模板与文档，均为作者的专有财产。
 
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
+【授权】仅授权在作者明确许可的范围内**安装并使用**本软件。
 
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
+【禁止】未经作者事先书面同意，不得实施下列任何行为：
+  1. 复制、分发、再分发本软件或其任何部分；
+  2. 修改、改编、翻译本软件，或基于本软件创建衍生作品；
+  3. 反编译、反向工程、反汇编，或以任何方式试图获取、还原可读源码；
+  4. 再许可、出租、出售、转让本软件，或以其提供商业服务；
+  5. 移除或更改本软件中的任何权属声明。
 
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+【历史版本】0.3.2 及更早的已发布版本曾以 MIT 许可发布，其授权不可撤销，
+             不受本文件约束；本文件仅适用于 0.3.3 及之后的版本。
+
+【免责】本软件按"现状"提供，不附带任何明示或默示担保。作者不对任何
+        直接或间接损失承担责任。
+
+如需其它授权（含商业授权），请与作者联系。

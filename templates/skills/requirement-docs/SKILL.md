@@ -83,7 +83,7 @@ whenToUse: 用户说「读下需求文档」「测某系统的某个需求文档
 | 报表指标 / 统计口径 | **页面 + 接口 + 库** | 报表无该指标；接口无该字段 |
 | 仅文案变化 | **页面** | 页面上是**新文案**，旧文案搜不到 |
 
-**三条取证通道（按"这功能在哪儿"选，别只挑一个）**：**页面** → playwright MCP（用户要"看着"时必用）；**接口** → `keyword_mcp` 报文落盘；**库** → 只读 SQL（连上先用 `host(inet_server_addr())` 自证没连错）。
+**三条取证通道（按"这功能在哪儿"选，别只挑一个）**：**页面** → playwright MCP（用户要"看着"时必用）；**接口** → playwright `browser_network_requests` / `browser_network_request`；**库** → 只读 SQL（连上先用 `host(inet_server_addr())` 自证没连错）。
 
 > ⚠️ **整表 / 整列被划掉时，最省的判据是查 `information_schema`**（`information_schema.tables` / `.columns`）—— 一次 SQL 就能证明"该表 / 该列在环境里到底还在不在"，比翻页面快得多。
 

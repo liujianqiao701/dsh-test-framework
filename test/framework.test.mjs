@@ -33,13 +33,26 @@ import {
   LINK_TABLE_COLUMNS,
   relationId,
   endsOf,
-} from '../lib/framework.js'
-import { renderTemplate, KNOWN_KEYS, TEMPLATE_ROOT, readTemplate, listTemplateFiles } from '../lib/templates.js'
-import { checkPrerequisites, renderPrereqBlock, detectProfileMcp } from '../lib/prereq.js'
-import { checkIsolation, renderIsolationBlock, renderIsolationStatus, scanExternalAuthorities } from '../lib/isolation.js'
-import { probeDocx, isOle, isZip, decodeXml, parseDocumentXml } from '../lib/docx.js'
-import { SKILLS } from '../lib/skills.js'
-import { TOOLS } from '../lib/tools.js'
+} from '../src/framework.js'
+import { renderTemplate, KNOWN_KEYS, TEMPLATE_ROOT, readTemplate, listTemplateFiles } from '../src/templates.js'
+import { checkPrerequisites, renderPrereqBlock, detectProfileMcp } from '../src/prereq.js'
+import { checkIsolation, renderIsolationBlock, renderIsolationStatus, scanExternalAuthorities } from '../src/isolation.js'
+import {
+  measurePromptBudget,
+  renderInstructions,
+  checkPromptBudget,
+  renderBudgetBlock,
+  budgetSummary,
+  sectionText,
+  PROMPT_BUDGET_BYTES,
+  PROMPT_BUDGET_RESERVE,
+  LEVEL_OK as BUDGET_LEVEL_OK,
+  LEVEL_TIGHT as BUDGET_LEVEL_TIGHT,
+  LEVEL_OVER as BUDGET_LEVEL_OVER,
+} from '../src/budget.js'
+import { probeDocx, isOle, isZip, decodeXml, parseDocumentXml } from '../src/docx.js'
+import { SKILLS } from '../src/skills.js'
+import { TOOLS } from '../src/tools.js'
 import {
   BUBBLE_DIR,
   ARCHIVE_SCRIPT,
@@ -50,7 +63,7 @@ import {
   planReportGc,
   runReportGc,
   renderReportGc,
-} from '../lib/report-gc.js'
+} from '../src/report-gc.js'
 
 const PRODUCT = '测试产品'
 let COUNTER = 0
@@ -1672,4 +1685,95 @@ test('跨端：test_framework_link 是只读工具，能如实报出错误与摘
   assert.equal(data.ok, false)
   assert.equal(data.products[0].summary.relations, 1)
   assert.equal(fs.readFileSync(registryFile(root), 'utf8'), before, '只读工具不许改登记文件')
+})
+
+// ---------------------------------------------------------------- 提示词预算（64 KB 预检）
+
+test('提示词预算：渲染口径照抄 DSH（单文件固定开销 304 字节）', () => {
+  const content = '# 契约\n\n中文也算多字节。\n'
+  const rendered = renderInstructions([{ displayPath: 'AGENTS.md', content }])
+  // 结构：<system-reminder>\n + intro + \n\n + section + \n</system-reminder>
+  assert.ok(rendered.startsWith('<system-reminder>\n'), '必须以基线标签开头')
+  assert.ok(rendered.endsWith('\n</system-reminder>'), '必须以基线标签收尾')
+  assert.ok(rendered.includes(sectionText('AGENTS.md', content)), '要包含 "Instructions from: AGENTS.md" 段')
+
+  const result = measurePromptBudget([{ displayPath: 'AGENTS.md', content }])
+  // 实测校对值：DSH 注入本框架 AGENTS.md 时的固定开销就是 304 字节
+  assert.equal(result.overhead, 304, '固定开销应为 304 字节（标签 + 前言 + 段头）')
+  assert.equal(result.used, Buffer.byteLength(content, 'utf8') + 304)
+  assert.equal(result.level, BUDGET_LEVEL_OK, '刚建的小文件不该报警')
+})
+
+test('提示词预算：三档判定（ok / tight / over）与余量计算', () => {
+  const content = 'x'.repeat(1000)
+  const file = [{ displayPath: 'AGENTS.md', content }]
+  const used = Buffer.byteLength(content, 'utf8') + 304
+
+  // 上限刚好比 used 多 2×reserve → 余量充足
+  const ok = measurePromptBudget(file, { maxBytes: used + PROMPT_BUDGET_RESERVE * 2 })
+  assert.equal(ok.level, BUDGET_LEVEL_OK)
+  assert.equal(ok.headroom, PROMPT_BUDGET_RESERVE * 2)
+
+  // 余量只剩 1 字节 → 告急
+  const tight = measurePromptBudget(file, { maxBytes: used + 1 })
+  assert.equal(tight.level, BUDGET_LEVEL_TIGHT)
+
+  // 超 500 字节 → over，headroom 为负
+  const over = measurePromptBudget(file, { maxBytes: used - 500 })
+  assert.equal(over.level, BUDGET_LEVEL_OVER)
+  assert.equal(over.headroom, -500)
+  assert.equal(over.ratio, Number(((used / (used - 500))).toFixed(4)))
+})
+
+test('提示词预算：用户级 AGENTS.md 也算在同一条消息的预算里', () => {
+  const root = tmpdir()
+  const home = tmpdir()
+  fs.writeFileSync(path.join(root, 'AGENTS.md'), '# 契约\n', 'utf8')
+
+  const alone = checkPromptBudget({ root, dshHome: home })
+  assert.equal(alone.files.length, 1)
+  assert.deepEqual(alone.absent, [path.join(home, 'AGENTS.md')], '没有用户级文件要说明')
+
+  const userContent = '# 用户级全局指令\n'
+  fs.writeFileSync(path.join(home, 'AGENTS.md'), userContent, 'utf8')
+  const both = checkPromptBudget({ root, dshHome: home })
+  assert.equal(both.files.length, 2)
+  assert.equal(both.files[0].displayPath, '~/.dsh/AGENTS.md', '宽范围文件在前（DSH 先丢它）')
+  const delta = both.used - alone.used
+  assert.equal(delta, Buffer.byteLength(userContent, 'utf8') + sectionText('~/.dsh/AGENTS.md', '').length + 2,
+    '多一份文件 = 正文 + 它自己的段头 + 段间分隔（"\\n\\n"）')
+})
+
+test('提示词预算：ok 时 gate 段为空，告急/超预算才注入（不占提示词）', () => {
+  const content = 'x'.repeat(500)
+  const file = [{ displayPath: 'AGENTS.md', content }]
+  const used = Buffer.byteLength(content, 'utf8') + 304
+
+  const ok = measurePromptBudget(file, { maxBytes: used + 5000 })
+  assert.equal(renderBudgetBlock(ok), '', '正常时必须是空串')
+
+  const over = measurePromptBudget(file, { maxBytes: used - 10 })
+  const block = renderBudgetBlock(over)
+  assert.ok(block.includes('提示词预算'), '超预算要说')
+  assert.ok(block.includes('截断'), '要说清后果是截断')
+  assert.ok(block.includes('_archive'), '要给归档处置')
+  assert.ok(budgetSummary(over).includes(String(over.used)))
+
+  // 超预算时 renderGate 必须带上这一段（登记全对也不能静默）
+  const gate = renderGate({
+    frameworkRoot: 'D:/fake-framework',
+    agentsMdAutoLoaded: true,
+    products: [],
+    prereqs: null,
+    isolation: null,
+    promptBudget: over,
+  })
+  assert.ok(gate.includes('提示词预算'), 'renderGate 要透出预算告警')
+  assert.equal(PROMPT_BUDGET_BYTES, 65536, 'DSH dsh-base 的 maxBytes 默认值')
+})
+
+test('提示词预算：框架根没有 AGENTS.md 时报错而不是静默返回 0 字节', () => {
+  const root = tmpdir()
+  const home = tmpdir()
+  assert.throws(() => checkPromptBudget({ root, dshHome: home }), /没有 AGENTS\.md/)
 })
