@@ -16,7 +16,7 @@
     "test-report"
   ],
   "author": "liujianqiao",
-  "license": "SEE LICENSE IN LICENSE",
+  "license": "MIT",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/liujianqiao701/dsh-test-framework.git"
@@ -29,39 +29,38 @@
     "access": "public",
     "registry": "https://registry.npmjs.org/"
   },
-  "main": "dist/index.js",
+  "main": "lib/index.js",
   "bin": {
-    "dsh-test-framework": "dist/cli.js"
+    "dsh-test-framework": "lib/cli.js"
   },
   "exports": {
-    ".": "./dist/index.js",
-    "./framework": "./dist/framework.js",
-    "./docx": "./dist/docx.js",
-    "./templates": "./dist/templates.js",
-    "./skills": "./dist/skills.js",
-    "./prereq": "./dist/prereq.js",
-    "./isolation": "./dist/isolation.js",
-    "./budget": "./dist/budget.js",
-    "./install": "./dist/install.js",
+    ".": "./lib/index.js",
+    "./framework": "./lib/framework.js",
+    "./docx": "./lib/docx.js",
+    "./templates": "./lib/templates.js",
+    "./skills": "./lib/skills.js",
+    "./prereq": "./lib/prereq.js",
+    "./isolation": "./lib/isolation.js",
+    "./budget": "./lib/budget.js",
+    "./install": "./lib/install.js",
     "./package.json": "./package.json"
   },
   "files": [
-    "dist",
+    "lib",
     "templates",
+    "test",
     "cordis.patch.yml",
     "README.md",
     "安装说明.md",
     "LICENSE"
   ],
   "scripts": {
-    "build": "node scripts/build.mjs",
-    "pretest": "node scripts/build.mjs",
     "test": "node test/framework.test.mjs && node test/install.test.mjs",
     "test:framework": "node test/framework.test.mjs",
     "test:install": "node test/install.test.mjs",
-    "status": "node dist/cli.js status",
-    "doctor": "node dist/cli.js doctor",
-    "help": "node dist/cli.js help"
+    "status": "node lib/cli.js status",
+    "doctor": "node lib/cli.js doctor",
+    "help": "node lib/cli.js help"
   },
   "dsh": {
     "bundle": {
@@ -73,9 +72,5 @@
   },
   "engines": {
     "node": ">=20"
-  },
-  "devDependencies": {
-    "esbuild": "^0.28.2",
-    "javascript-obfuscator": "^5.9.0"
   }
 }

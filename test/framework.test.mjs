@@ -33,10 +33,10 @@ import {
   LINK_TABLE_COLUMNS,
   relationId,
   endsOf,
-} from '../src/framework.js'
-import { renderTemplate, KNOWN_KEYS, TEMPLATE_ROOT, readTemplate, listTemplateFiles } from '../src/templates.js'
-import { checkPrerequisites, renderPrereqBlock, detectProfileMcp } from '../src/prereq.js'
-import { checkIsolation, renderIsolationBlock, renderIsolationStatus, scanExternalAuthorities } from '../src/isolation.js'
+} from '../lib/framework.js'
+import { renderTemplate, KNOWN_KEYS, TEMPLATE_ROOT, readTemplate, listTemplateFiles } from '../lib/templates.js'
+import { checkPrerequisites, renderPrereqBlock, detectProfileMcp } from '../lib/prereq.js'
+import { checkIsolation, renderIsolationBlock, renderIsolationStatus, scanExternalAuthorities } from '../lib/isolation.js'
 import {
   measurePromptBudget,
   renderInstructions,
@@ -49,10 +49,10 @@ import {
   LEVEL_OK as BUDGET_LEVEL_OK,
   LEVEL_TIGHT as BUDGET_LEVEL_TIGHT,
   LEVEL_OVER as BUDGET_LEVEL_OVER,
-} from '../src/budget.js'
-import { probeDocx, isOle, isZip, decodeXml, parseDocumentXml } from '../src/docx.js'
-import { SKILLS } from '../src/skills.js'
-import { TOOLS } from '../src/tools.js'
+} from '../lib/budget.js'
+import { probeDocx, isOle, isZip, decodeXml, parseDocumentXml } from '../lib/docx.js'
+import { SKILLS } from '../lib/skills.js'
+import { TOOLS } from '../lib/tools.js'
 import {
   BUBBLE_DIR,
   ARCHIVE_SCRIPT,
@@ -63,7 +63,7 @@ import {
   planReportGc,
   runReportGc,
   renderReportGc,
-} from '../src/report-gc.js'
+} from '../lib/report-gc.js'
 
 const PRODUCT = '测试产品'
 let COUNTER = 0

@@ -19,7 +19,7 @@ import {
   applyInstall,
   applyUninstall,
   defaultDshHome,
-} from '../src/install.js'
+} from '../lib/install.js'
 
 const PLUGIN_DIR = path.resolve(import.meta.dirname, '..')
 const PLUGIN_NAME = 'dsh-test-framework'
