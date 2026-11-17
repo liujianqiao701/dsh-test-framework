@@ -53,6 +53,8 @@ import {
 import { probeDocx, isOle, isZip, decodeXml, parseDocumentXml } from '../lib/docx.js'
 import { SKILLS } from '../lib/skills.js'
 import { TOOLS } from '../lib/tools.js'
+import { apply } from '../lib/index.js'
+import { resolveRoot } from '../lib/cli.js'
 import {
   BUBBLE_DIR,
   ARCHIVE_SCRIPT,
@@ -468,6 +470,111 @@ test('每个工具都是合法的 ToolDefinition 形状（不依赖 defineTool�
     assert.equal(typeof t.parameters, 'object')
     assert.ok(t.parameters.type === 'object' || t.parameters.type === undefined)
     assert.ok(Array.isArray(t.parameters.required))
+  }
+})
+
+// ---------------------------------------------------------------------------
+// 注册时序（0.3.4 修的真实故障：7 个工具一个都没注册，且不报错）
+// ---------------------------------------------------------------------------
+
+/** README 声称 7 个工具 —— 名字在这里钉死，少一个就红。 */
+const REQUIRED_TOOLS = [
+  'test_framework_status',
+  'test_framework_init',
+  'test_framework_module_add',
+  'test_framework_link',
+  'test_framework_record',
+  'test_framework_doc_probe',
+  'test_framework_report_gc',
+]
+
+test('工具契约：README 声称的 7 个工具全在（数量与名字都钉死）', () => {
+  const names = new Set(TOOLS.map((t) => t.name))
+  assert.ok(TOOLS.length >= 7, `至少 7 个工具，实际 ${TOOLS.length}`)
+  for (const name of REQUIRED_TOOLS) assert.ok(names.has(name), `少了工具 ${name}`)
+})
+
+test('apply：服务全缺失时不抛，四段都挂到 ctx.inject 上等就绪', () => {
+  const pending = []
+  const ctx = { inject: (deps, cb) => pending.push({ service: deps[0], cb }) }
+  assert.doesNotThrow(() => apply(ctx, {}), '服务缺失绝不能把 DSH 启动搞挂')
+  assert.deepEqual(
+    pending.map((p) => p.service).sort(),
+    ['commands', 'skills', 'systemPrompt', 'tools'],
+    '四段都应改成「等就绪」而不是当场放弃',
+  )
+})
+
+test('apply：服务已就绪时当场注册 7 个工具，且不再挂 inject（不会重复注册）', () => {
+  const registered = []
+  let injectCalls = 0
+  const ctx = {
+    tools: { register: (def) => { registered.push(def.name); return () => {} } },
+    skills: { register: () => () => {} },
+    systemPrompt: { section: () => {} },
+    commands: { register: () => {} },
+    inject: () => { injectCalls += 1 },
+  }
+  apply(ctx, {})
+  assert.deepEqual(registered.sort(), [...REQUIRED_TOOLS].sort(), '7 个工具必须全部注册')
+  assert.equal(injectCalls, 0, '服务都在时不该再挂 inject')
+})
+
+test('apply：tools 晚到（DSH 0.2 的真实时序）由 inject 回调补注册 7 个工具', () => {
+  const pending = []
+  const ctx = { inject: (deps, cb) => pending.push({ service: deps[0], cb }) }
+  apply(ctx, {})
+
+  const entry = pending.find((p) => p.service === 'tools')
+  assert.ok(entry, 'tools 必须挂到 ctx.inject 等待')
+
+  const registered = []
+  entry.cb({ tools: { register: (def) => { registered.push(def.name); return () => {} } } })
+  assert.deepEqual(registered.sort(), [...REQUIRED_TOOLS].sort(), '服务就绪后必须补注册，一个都不能少')
+})
+
+// ---------------------------------------------------------------------------
+// 文档一致性（这两个 bug 都在 0.3.4 之前真实存在过）
+// ---------------------------------------------------------------------------
+
+test('文档一致性：README 工具表覆盖全部工具，且不再引用不存在的 dist\\cli.js', () => {
+  const readme = fs.readFileSync(new URL('../README.md', import.meta.url), 'utf8')
+
+  for (const name of REQUIRED_TOOLS) {
+    assert.ok(readme.includes('`' + name + '`'), `README 漏了工具 ${name} 的说明行`)
+  }
+
+  // 只校验「使用说明」部分（变更记录里提到旧路径是历史，不该被改掉）
+  const usage = readme.split('## 八、变更记录')[0]
+  // 0.3.3 之前 README 写着 `node dist\cli.js ...`，但源码回退到 lib\ 布局后入口是 lib\cli.js —— 照文档敲会 file not found
+  assert.doesNotMatch(usage, /dist[\\/]cli\.js/, 'README 使用说明里仍有陈旧入口 dist\\cli.js，实际是 lib\\cli.js')
+
+  const installDoc = fs.readFileSync(new URL('../安装说明.md', import.meta.url), 'utf8')
+  assert.doesNotMatch(installDoc, /dist[\\/]cli\.js/, '安装说明里仍有陈旧入口 dist\\cli.js')
+})
+
+test('CLI 根解析：在子目录（含插件目录）里跑也能找到框架根，不会被 cwd 带偏', () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'testfw-root-'))
+  const fw = path.join(base, 'myfw')
+  const nested = path.join(fw, '_plugin', 'some-plugin')
+  fs.mkdirSync(nested, { recursive: true })
+  fs.writeFileSync(path.join(fw, '.dsh-test-framework.json'), '{"schema":"dsh-test-framework/root/v1"}')
+
+  const original = process.cwd()
+  try {
+    // ① 显式 --root 优先
+    assert.equal(resolveRoot({ root: nested }), path.resolve(nested))
+
+    // ② 从深层子目录向上找到框架根 —— 这正是「在 _plugin\dsh-test-framework 里跑 CLI」的场景
+    process.chdir(nested)
+    assert.equal(resolveRoot(), fw, '应向上找到带 .dsh-test-framework.json 的框架根，而不是停在 cwd')
+
+    // ③ 一路找不到标记就退回 cwd（不抛）
+    fs.rmSync(path.join(fw, '.dsh-test-framework.json'))
+    assert.equal(resolveRoot(), nested)
+  } finally {
+    process.chdir(original)
+    fs.rmSync(base, { recursive: true, force: true })
   }
 })
 
